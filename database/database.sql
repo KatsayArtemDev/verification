@@ -2,14 +2,14 @@ create database verification;
 
 create extension if not exists "uuid-ossp";
 
-drop table blocks
+drop table pins
 ;
 
 set timezone to 'UTC';
 
 create table pins(
   user_id uuid not null primary key,
-  created_at timestamp default (current_timestamp at time zone 'UTC'),
+  sent_at timestamp,
   pin text not null
 )
 ;

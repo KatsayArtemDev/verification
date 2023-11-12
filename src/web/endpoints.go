@@ -3,19 +3,19 @@ package web
 import (
 	"fmt"
 	"github.com/KatsayArtemDev/verification/src/processing"
-	"github.com/KatsayArtemDev/verification/src/sending"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"net/http"
 )
 
-func (app app) getEmail(c *gin.Context) {
-	// Struct of request data
-	var emailBody struct {
-		UserId uuid.UUID `json:"user_id"`
-		Email  string    `json:"email"`
-	}
+// Struct of request email data
+var emailBody struct {
+	UserId uuid.UUID `json:"user_id"`
+	//PinSeqNum uuid.UUID `json:"pin_seq_num"`
+	Email string `json:"email"`
+}
 
+func (app app) getEmail(c *gin.Context) {
 	// Bind struct values
 	err := c.Bind(&emailBody)
 	if err != nil {
@@ -27,6 +27,28 @@ func (app app) getEmail(c *gin.Context) {
 		userId = emailBody.UserId
 		email  = emailBody.Email
 	)
+
+	// TODO: move checking exists to usecase
+	isUserExistInBlocksTable, err := app.blocks.CheckIfUserExist(userId)
+	if err != nil {
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to check if user exist in blocks table: %w", err))
+	}
+
+	if isUserExistInBlocksTable != 0 {
+		app.fail(c, http.StatusUnauthorized, fmt.Errorf("user is blocked"))
+		return
+	}
+
+	// Check if pin was sent to user
+	isUserExistInPinsTable, err := app.pins.CheckIfUserExist(userId)
+	if err != nil {
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to check if user exist in pins table: %w", err))
+	}
+
+	if isUserExistInPinsTable != 0 {
+		app.fail(c, http.StatusUnauthorized, fmt.Errorf("pin was sent"))
+		return
+	}
 
 	// Check email length
 	if len(email) == 0 {
@@ -41,31 +63,10 @@ func (app app) getEmail(c *gin.Context) {
 		return
 	}
 
-	// Generate new pin
-	pin, err := processing.PinGenerating()
+	// Create new pin code and send to user
+	err = app.worker.SendingProcessing(userId, email)
 	if err != nil {
-		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to create new pin: %w", err))
-		return
-	}
-
-	// Hash generated pin
-	hash, err := processing.PinHashing(pin)
-	if err != nil {
-		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to hash pin: %w", err))
-		return
-	}
-
-	// Add new user to table
-	err = app.pins.AddNewUser(userId, hash)
-	if err != nil {
-		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to add new user: %w", err))
-		return
-	}
-
-	// Send pin to user
-	err = sending.PinToUser(email, pin)
-	if err != nil {
-		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to send email: %w", err))
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to send pin to user: %w", err))
 		return
 	}
 
@@ -73,13 +74,14 @@ func (app app) getEmail(c *gin.Context) {
 	app.success(c, nil)
 }
 
-func (app app) getPin(c *gin.Context) {
-	// Struct of request data
-	var pinBody struct {
-		UserId uuid.UUID `json:"user_id"`
-		Pin    string    `json:"pin"`
-	}
+// Struct of request data
+var pinBody struct {
+	UserId uuid.UUID `json:"user_id"`
+	Email  string    `json:"email"`
+	Pin    string    `json:"pin"`
+}
 
+func (app app) getPin(c *gin.Context) {
 	// Bind struct values
 	err := c.Bind(&pinBody)
 	if err != nil {
@@ -89,35 +91,14 @@ func (app app) getPin(c *gin.Context) {
 
 	var (
 		userId = pinBody.UserId
+		email  = pinBody.Email
 		pin    = pinBody.Pin
 	)
 
-	// TODO: think about name @InBlocksTable@
-	isUserExistInBlocksTable, err := app.blocks.CheckIfUserExist(userId)
+	requestStatus, err := app.worker.BlocksProcessing(userId)
 	if err != nil {
-		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to check if user in blocks table: %w", err))
+		app.fail(c, requestStatus, fmt.Errorf("failed to execute blocks processing: %w", err))
 		return
-	}
-
-	if isUserExistInBlocksTable != 0 {
-		dbBlockedAt, err := app.blocks.GetUserDbData(userId)
-		if err != nil {
-			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to check if user in blocks table: %w", err))
-			return
-		}
-
-		temporaryBlockingChange := processing.TimeChecking(dbBlockedAt)
-
-		if temporaryBlockingChange.Minutes() < 2 {
-			app.fail(c, http.StatusUnauthorized, fmt.Errorf("user is blocked"))
-			return
-		}
-
-		err = app.blocks.DeleteUser(userId)
-		if err != nil {
-			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to delete user: %w", err))
-			return
-		}
 	}
 
 	// Check pin length
@@ -126,30 +107,26 @@ func (app app) getPin(c *gin.Context) {
 		return
 	}
 
-	// Get user db data
-	userDbData, err := app.pins.GetUserDbData(userId)
+	dbPin, temporarySendingChange, err := app.worker.GetUserDataAndCalcTimeDiff(userId)
 	if err != nil {
-		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to bind pin body: %w", err))
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to execute getting user data and calculate time difference: %w", err))
 		return
 	}
 
-	var (
-		dbPin      = userDbData.DbPin
-		dbCreateAt = userDbData.DbCreatedAt
-	)
-
-	temporaryCreatingChange := processing.TimeChecking(dbCreateAt)
-
 	// Check difference between hours to remove expired
-	if temporaryCreatingChange.Hours() > 2 {
-		err := app.pinWorker.AttemptsProcessing(userId)
+	if temporarySendingChange.Hours() > 2 {
+		err := app.worker.AttemptsProcessing(userId)
 		if err != nil {
 			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to execute attempts processing: %w", err))
 			return
 		}
 
-		// update pin code for user
-		// resend new pin code to user
+		// Create new pin code and send to user
+		err = app.worker.SendingProcessing(userId, email)
+		if err != nil {
+			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to send pin to user: %w", err))
+			return
+		}
 
 		err = app.pins.DeleteUser(userId)
 		if err != nil {
@@ -164,7 +141,7 @@ func (app app) getPin(c *gin.Context) {
 	// Compare pin
 	err = processing.PinComparing(dbPin, pin)
 	if err != nil {
-		err := app.pinWorker.AttemptsProcessing(userId)
+		err := app.worker.AttemptsProcessing(userId)
 		if err != nil {
 			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to execute attempts processing: %w", err))
 			return
@@ -174,12 +151,66 @@ func (app app) getPin(c *gin.Context) {
 		return
 	}
 
-	// Delete verified user
-	err = app.pins.DeleteUser(userId)
+	err = app.worker.DeleteUserFromPinsAndAttemptsTables(userId)
 	if err != nil {
-		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to delete user: %w", err))
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to execute deleting user from pins and attempts tables: %w", err))
+		return
 	}
 
 	// Success end
 	app.success(c, "confirmed")
+}
+
+// Struct of request data
+var resendPinBody struct {
+	UserId uuid.UUID `json:"user_id"`
+	Email  string    `json:"email"`
+}
+
+func (app app) resendPin(c *gin.Context) {
+	// Bind struct values
+	err := c.Bind(&resendPinBody)
+	if err != nil {
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to bind resend pin body: %w", err))
+		return
+	}
+
+	var (
+		userId = resendPinBody.UserId
+		email  = resendPinBody.Email
+	)
+
+	isUserExistInBlocksTable, err := app.blocks.CheckIfUserExist(userId)
+	if err != nil {
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to check if user exist in blocks table: %w", err))
+	}
+
+	if isUserExistInBlocksTable != 0 {
+		app.fail(c, http.StatusUnauthorized, fmt.Errorf("user is blocked"))
+		return
+	}
+
+	_, temporarySendingChange, err := app.worker.GetUserDataAndCalcTimeDiff(userId)
+	if err != nil {
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to execute getting user data and calculate time difference: %w", err))
+		return
+	}
+
+	// Check when was sent last email
+	if temporarySendingChange.Minutes() < 1 {
+		timeUntilNewSend := 60 - temporarySendingChange.Seconds()
+		app.fail(c, http.StatusUnauthorized, fmt.Errorf("time has not passed since the last sending: %d", int(timeUntilNewSend)))
+		return
+	}
+
+	// Create new pin code and send to user
+	err = app.worker.SendingProcessing(userId, email)
+	if err != nil {
+		app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to send pin to user: %w", err))
+		return
+	}
+
+	// update sent_at
+
+	app.success(c, "new pin was sent")
 }

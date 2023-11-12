@@ -28,6 +28,7 @@ func serverRouter(app app) *gin.Engine {
 
 	routerGroup.POST("/receiving-email", app.getEmail)
 	routerGroup.POST("/receiving-pin", app.getPin)
+	routerGroup.POST("/resending-pin", app.resendPin)
 
 	return router
 }

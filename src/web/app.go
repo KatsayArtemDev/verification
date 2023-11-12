@@ -12,11 +12,10 @@ import (
 )
 
 type app struct {
-	pins      database.Pins
-	attempts  database.Attempts
-	blocks    database.Blocks
-	pinWorker usecase.PinWorker
-	logger    *zap.SugaredLogger
+	pins   database.Pins
+	blocks database.Blocks
+	worker usecase.Worker
+	logger *zap.SugaredLogger
 }
 
 func initServer() (app, *sql.DB, error) {
@@ -33,11 +32,10 @@ func initServer() (app, *sql.DB, error) {
 	db, err := initializers.ConnectToDb()
 
 	var app = app{
-		pins:      database.NewPins(db),
-		attempts:  database.NewAttempts(db),
-		blocks:    database.NewBlocks(db),
-		pinWorker: usecase.NewPinWorker(db),
-		logger:    logger.Sugar(),
+		pins:   database.NewPins(db),
+		blocks: database.NewBlocks(db),
+		worker: usecase.NewWorker(db),
+		logger: logger.Sugar(),
 	}
 
 	return app, db, nil
