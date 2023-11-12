@@ -142,49 +142,19 @@ func (app app) getPin(c *gin.Context) {
 
 	// Check difference between hours to remove expired
 	if temporaryCreatingChange.Hours() > 2 {
-		isUserExistInAttemptsTable, err := app.Attempts.CheckIfUserExist(userId)
+		err := app.pinWorker.AttemptsProcessing(userId)
 		if err != nil {
-			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to check if user in attempts table: %w", err))
+			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to execute attempts processing: %w", err))
 			return
 		}
 
-		if isUserExistInAttemptsTable == 0 {
-			err = app.Attempts.InitNewUser(userId)
-			if err != nil {
-				app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to initialize new user: %w", err))
-				return
-			}
-		} else {
-			err = app.Attempts.IncrementUserAttempts(userId)
-			if err != nil {
-				app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to increment user attempts: %w", err))
-				return
-			}
-
-			attempts, err := app.Attempts.GetUserAttempts(userId)
-			if err != nil {
-				app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to select user attempts: %w", err))
-				return
-			}
-
-			if attempts > 5 {
-				err = app.blocks.AddNewUser(userId)
-				if err != nil {
-					app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to add new user: %w", err))
-					return
-				}
-
-				err = app.Attempts.DeleteUser(userId)
-				if err != nil {
-					app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to delete user: %w", err))
-					return
-				}
-			}
-		}
+		// update pin code for user
+		// resend new pin code to user
 
 		err = app.pins.DeleteUser(userId)
 		if err != nil {
 			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to delete user: %w", err))
+			return
 		}
 
 		app.fail(c, http.StatusUnauthorized, fmt.Errorf("pin has expired"))
@@ -194,6 +164,12 @@ func (app app) getPin(c *gin.Context) {
 	// Compare pin
 	err = processing.PinComparing(dbPin, pin)
 	if err != nil {
+		err := app.pinWorker.AttemptsProcessing(userId)
+		if err != nil {
+			app.fail(c, http.StatusBadRequest, fmt.Errorf("failed to execute attempts processing: %w", err))
+			return
+		}
+
 		app.fail(c, http.StatusUnauthorized, fmt.Errorf("pin is not correct"))
 		return
 	}

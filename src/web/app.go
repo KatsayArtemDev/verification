@@ -5,16 +5,18 @@ import (
 	"fmt"
 	"github.com/KatsayArtemDev/verification/src/database"
 	"github.com/KatsayArtemDev/verification/src/initializers"
+	"github.com/KatsayArtemDev/verification/src/usecase"
 	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 	"log"
 )
 
 type app struct {
-	pins     database.Pins
-	Attempts database.Attempts
-	blocks   database.Blocks
-	logger   *zap.SugaredLogger
+	pins      database.Pins
+	attempts  database.Attempts
+	blocks    database.Blocks
+	pinWorker usecase.PinWorker
+	logger    *zap.SugaredLogger
 }
 
 func initServer() (app, *sql.DB, error) {
@@ -31,10 +33,11 @@ func initServer() (app, *sql.DB, error) {
 	db, err := initializers.ConnectToDb()
 
 	var app = app{
-		pins:     database.NewPins(db),
-		Attempts: database.NewAttempts(db),
-		blocks:   database.NewBlocks(db),
-		logger:   logger.Sugar(),
+		pins:      database.NewPins(db),
+		attempts:  database.NewAttempts(db),
+		blocks:    database.NewBlocks(db),
+		pinWorker: usecase.NewPinWorker(db),
+		logger:    logger.Sugar(),
 	}
 
 	return app, db, nil
