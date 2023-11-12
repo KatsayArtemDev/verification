@@ -1,0 +1,17 @@
+### Send POST request with json body
+POST http://localhost:8080/api/ v1/receiving-email
+Content-Type: application/json
+
+{
+  "user_id": "0d8c0d98-ef76-46a1-9217-453058184b9f",
+  "email": "katsayartemdev@gmail.com"
+}
+
+### Send POST request with json body
+POST http://localhost:8080/api/v1/receiving-pin
+Content-Type: application/json
+
+{
+  "user_id": "0d8c0d98-ef76-46a1-9217-453058184b9f",
+  "pin": "119046"
+}
